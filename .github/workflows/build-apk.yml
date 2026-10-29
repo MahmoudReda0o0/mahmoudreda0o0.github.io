@@ -1,0 +1,88 @@
+# Builds an Android APK of MahmoudReda0o0/personal_website_v2 and publishes
+# it (with the build log) to the `apk-build` branch of this repo.
+#
+# Trigger: edit .github/apk-request.json on main (set "ref"), or run it
+# manually from the Actions tab.
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+    paths: [".github/apk-request.json"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch / tag / commit of personal_website_v2 to build"
+        required: true
+        default: "main"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-apk
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+        with:
+          path: site
+
+      - name: Pick source ref
+        id: req
+        run: |
+          if [ -n "${{ github.event.inputs.ref }}" ]; then
+            REF="${{ github.event.inputs.ref }}"
+          else
+            REF=$(jq -r '.ref // "main"' site/.github/apk-request.json)
+          fi
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout app source
+        uses: actions/checkout@v4
+        with:
+          repository: MahmoudReda0o0/personal_website_v2
+          ref: ${{ steps.req.outputs.ref }}
+          path: src
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Build APK
+        id: build
+        working-directory: src
+        run: |
+          set -o pipefail
+          {
+            echo "source ref: ${{ steps.req.outputs.ref }} ($(git rev-parse HEAD))"
+            flutter --version
+            flutter pub get
+            flutter build apk --release
+          } 2>&1 | tee ../apk-build.log
+
+      - name: Publish APK and log
+        if: always()
+        run: |
+          mkdir -p out
+          cp apk-build.log out/ 2>/dev/null || echo "no log" > out/apk-build.log
+          echo "${{ steps.build.outcome }}" > out/STATUS
+          if [ -f src/build/app/outputs/flutter-apk/app-release.apk ]; then
+            cp src/build/app/outputs/flutter-apk/app-release.apk out/mivo.apk
+          fi
+          cd out
+          git init -q -b apk-build
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A && git commit -q -m "APK: ${{ steps.build.outcome }} (${{ steps.req.outputs.ref }})"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" apk-build
