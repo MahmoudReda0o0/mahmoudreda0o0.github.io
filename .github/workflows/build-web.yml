@@ -1,0 +1,93 @@
+# Builds the Flutter web app from MahmoudReda0o0/personal_website_v2 and
+# publishes the result to the `web-build-output` branch of this repo, plus the
+# full build log to `web-build-log` (on success and on failure).
+# Deploying to the live site is a separate step: copy the output into `main`.
+#
+# Trigger: edit .github/build-request.json on main (set "ref"), or run it
+# manually from the Actions tab.
+name: Build Flutter web
+
+on:
+  push:
+    branches: [main]
+    paths: [".github/build-request.json"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch / tag / commit of personal_website_v2 to build"
+        required: true
+        default: "main"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-web
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+        with:
+          path: site
+
+      - name: Pick source ref
+        id: req
+        run: |
+          if [ -n "${{ github.event.inputs.ref }}" ]; then
+            REF="${{ github.event.inputs.ref }}"
+          else
+            REF=$(jq -r '.ref // "main"' site/.github/build-request.json)
+          fi
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout app source
+        uses: actions/checkout@v4
+        with:
+          repository: MahmoudReda0o0/personal_website_v2
+          ref: ${{ steps.req.outputs.ref }}
+          path: src
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Build web
+        id: build
+        working-directory: src
+        run: |
+          set -o pipefail
+          {
+            echo "source ref: ${{ steps.req.outputs.ref }} ($(git rev-parse HEAD))"
+            flutter --version
+            flutter pub get
+            flutter analyze --no-fatal-infos --no-fatal-warnings || true
+            flutter build web --release
+          } 2>&1 | tee ../build.log
+
+      - name: Publish build log
+        if: always()
+        run: |
+          mkdir -p logdir && cp build.log logdir/ 2>/dev/null || echo "no log" > logdir/build.log
+          echo "${{ steps.build.outcome }}" > logdir/STATUS
+          cd logdir
+          git init -q -b web-build-log
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A && git commit -q -m "Build log: ${{ steps.build.outcome }} (${{ steps.req.outputs.ref }})"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" web-build-log
+
+      - name: Publish build output
+        if: steps.build.outcome == 'success'
+        run: |
+          cd src/build/web
+          git init -q -b web-build-output
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A && git commit -q -m "Web build of personal_website_v2@${{ steps.req.outputs.ref }}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" web-build-output
